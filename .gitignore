@@ -1,0 +1,9 @@
+/build/
+/build-host/
+/local-config/
+/tests/build/
+/*.obj
+/*.elf
+/*.nacp
+/*.nro
+/NUL
