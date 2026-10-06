@@ -40,6 +40,17 @@ struct TagGroup {
 // Search query for one tag, exact match: parody:"flower knight girl$".
 std::string TagSearchQuery(const std::string& name_space, const std::string& tag);
 
+// One preview thumbnail on a detail page. Normal previews are cut from a
+// sprite sheet: offset_x/width/height select the part of image_url; large
+// previews use the whole image (width == 0).
+struct GalleryPreview {
+    int page_index = 0;
+    std::string image_url;
+    int offset_x = 0;
+    int width = 0;
+    int height = 0;
+};
+
 struct GalleryDetail {
     std::int64_t gid = 0;
     std::string token;
@@ -66,6 +77,8 @@ struct GalleryDetail {
     std::string api_url;
     // Favorite folder name, empty when the gallery is not a favorite.
     std::string favorite_name;
+    // Previews loaded so far (the detail page holds the first preview page).
+    std::vector<GalleryPreview> previews;
 };
 
 // The add-to-favorites popup (gallerypopups.php?act=addfav).
@@ -120,6 +133,8 @@ bool ParseGalleryPage(const std::string& document, GalleryPage* page,
                       std::string* error = nullptr);
 ListNavigation ParseListNavigation(const std::string& document);
 bool ParseFavoriteSlots(const std::string& document, FavoriteSlots* slots);
+// Preview thumbnails of a detail page (any ?p=N), in page order.
+std::vector<GalleryPreview> ParsePreviews(const std::string& document, std::int64_t gid);
 // Returns false when the page has no folder bar (not a favorites page).
 bool ParseFavoriteFolders(const std::string& document, FavoriteFolders* folders);
 bool ParseRatingResponse(const std::string& json, RatingResult* result, std::string* error = nullptr);

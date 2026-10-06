@@ -288,6 +288,7 @@ bool ParseGalleryDetail(const std::string& document, std::int64_t gid,
     }
 
     ParsePreviewTokens(document, gid, &parsed.page_tokens);
+    parsed.previews = ParsePreviews(document, gid);
     parsed.comments = ParseComments(document);
 
     // <td class="tc">parody:</td><td><div id="td_parody:flower_knight_girl" ...
@@ -579,6 +580,47 @@ int ParsePreviewTokens(const std::string& document, std::int64_t gid,
         cursor = number_end;
     }
     return added;
+}
+
+std::vector<GalleryPreview> ParsePreviews(const std::string& document, std::int64_t gid) {
+    std::vector<GalleryPreview> previews;
+    const std::size_t grid = document.find("id=\"gdt\"");
+    if (grid == std::string::npos) return previews;
+    const std::string suffix = "/" + std::to_string(gid) + "-";
+    std::size_t cursor = grid;
+    // <a href=".../s/TOKEN/GID-N"><div style="width:Wpx;height:Hpx;background:
+    // transparent url(URL) -Xpx 0 no-repeat"></div></a>, or <img src=URL> for
+    // large previews.
+    while ((cursor = document.find("/s/", cursor)) != std::string::npos) {
+        const std::size_t number_begin = document.find(suffix, cursor);
+        const std::size_t tag_end = document.find('>', cursor);
+        cursor += 3;
+        if (number_begin == std::string::npos || tag_end == std::string::npos || number_begin > tag_end) continue;
+        const int page = std::atoi(document.c_str() + number_begin + suffix.size());
+        if (page <= 0) continue;
+        const std::size_t next_link = document.find("/s/", tag_end);
+        const std::size_t limit = std::min(next_link, document.find("</a>", tag_end));
+        if (limit == std::string::npos) break;
+        const std::string block = document.substr(tag_end, limit - tag_end);
+        GalleryPreview preview;
+        preview.page_index = page - 1;
+        const std::size_t url = block.find("url(");
+        if (url != std::string::npos) {
+            preview.image_url = CssUrlAfter(block, url, 0);
+            const std::size_t close = block.find(')', url);
+            if (close != std::string::npos) preview.offset_x = std::abs(std::atoi(block.c_str() + close + 1));
+            const std::size_t width = block.find("width:");
+            const std::size_t height = block.find("height:");
+            if (width != std::string::npos) preview.width = std::atoi(block.c_str() + width + 6);
+            if (height != std::string::npos) preview.height = std::atoi(block.c_str() + height + 7);
+        } else {
+            preview.image_url = ImageSource(NextImageTag(block, 0, block.size()));
+        }
+        if (preview.image_url.empty()) continue;
+        if (previews.empty() || previews.back().page_index != preview.page_index) previews.push_back(preview);
+        cursor = limit;
+    }
+    return previews;
 }
 
 bool ParseGalleryPage(const std::string& document, GalleryPage* page, std::string* error) {

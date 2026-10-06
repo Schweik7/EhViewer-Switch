@@ -216,11 +216,24 @@ void App::PollNetworkTask()
         else if (result.success && result.type == TaskType::GalleryDetail)
         {
             m_detail = std::move(result.detail);
+            m_preview_pages_loaded = 1;
             m_screen = Screen::GalleryDetail;
             RecordHistory(m_detail);
             if (m_settings.show_thumbnails && !m_ui.HasThumbnail(m_detail.gid) && !m_detail.cover_url.empty())
                 m_thumbnails.Replace({{m_detail.gid, m_detail.cover_url}},
                                      m_cookies.BuildCookieHeader(), NetworkOptions());
+        }
+        else if (result.success && result.type == TaskType::Previews && result.gid == m_detail.gid)
+        {
+            // Append, skipping pages that are already there.
+            const int last = m_detail.previews.empty() ? -1 : m_detail.previews.back().page_index;
+            for (ehviewer::GalleryPreview& preview : result.previews)
+                if (preview.page_index > last)
+                    m_detail.previews.push_back(std::move(preview));
+            ++m_preview_pages_loaded;
+            if (m_screen == Screen::Previews)
+                RequestPreviewThumbnails();
+            result.status.clear();
         }
         else if (result.success && result.type == TaskType::FavoriteSlots)
         {
@@ -563,6 +576,37 @@ void App::RateGallery(int rating)
             std::snprintf(text, sizeof(text), T("已评分 %.1f 星"), rating / 2.0);
             result.status = text;
         }
+        return result;
+    });
+}
+
+void App::LoadMorePreviews()
+{
+    if (m_preview_pages_loaded >= m_detail.preview_page_count || m_task_type != TaskType::None)
+        return;
+    const std::string url = SiteBase() + "/g/" + std::to_string(m_detail.gid) + "/" + m_detail.token +
+                            "/?p=" + std::to_string(m_preview_pages_loaded);
+    const std::int64_t gid = m_detail.gid;
+    const std::string cookie_header = m_cookies.BuildCookieHeader();
+    const ehviewer::HttpRequestOptions options = NetworkOptions();
+    const ehviewer::HttpClient::RouteCallback on_route = RouteReporter();
+    StartTask(TaskType::Previews, T("正在载入更多预览"),
+              [this, url, gid, cookie_header, options, on_route](const std::atomic_bool* cancel) {
+        TaskResult result;
+        result.type = TaskType::Previews;
+        result.gid = gid;
+        const ehviewer::HttpResponse response = m_http.GetWithFallback(
+            url, cookie_header, kCaFile, options, 8U * 1024U * 1024U, cancel, on_route);
+        if (!response.ok())
+        {
+            result.status = response.error.empty() ? T("预览 HTTP ") + std::to_string(response.status_code)
+                                                   : T("载入预览失败: ") + response.error;
+            return result;
+        }
+        result.previews = ehviewer::ParsePreviews(response.body, gid);
+        result.success = !result.previews.empty();
+        if (!result.success)
+            result.status = T("预览页面解析失败");
         return result;
     });
 }

@@ -10,6 +10,7 @@
 #include "download/Downloader.h"
 #include "download/ThumbnailLoader.h"
 #include "net/HttpClient.h"
+#include "net/Updater.h"
 #include "ui/ReaderView.h"
 #include "ui/Ui.h"
 #include <string>
@@ -23,13 +24,15 @@ class App
 {
 public:
     App();
+    // The NRO's own path (argv[0]), used by the updater.
+    void SetSelfPath(const std::string& path) { m_updater.SetSelfPath(path); }
     bool Init();
     void Run();
     void Uninit();
 
 private:
-    enum class Screen { GalleryList, GalleryDetail, Comments, Tags, Library, Reader, Settings, Subscriptions };
-    enum class TaskType { None, Login, GalleryList, GalleryDetail, FavoriteSlots, SetFavorite, Rate };
+    enum class Screen { GalleryList, GalleryDetail, Comments, Tags, Previews, Library, Reader, Settings, Subscriptions };
+    enum class TaskType { None, Login, GalleryList, GalleryDetail, FavoriteSlots, SetFavorite, Rate, Previews };
     // Order matters: ZL/ZR cycle through the online sources; Search joins
     // once used. History is local and opened from the sidebar or Home (L).
     enum class ListSource { Latest, Popular, Watched, Favorites, Toplist, Search, History };
@@ -50,6 +53,8 @@ private:
         bool has_favorite_folders{};
         std::string favorite_name;
         ehviewer::RatingResult rating;
+        std::int64_t gid{};
+        std::vector<ehviewer::GalleryPreview> previews;
     };
 
     void ReloadCookieConfig();
@@ -119,6 +124,15 @@ private:
     void HandleTagsInput(std::uint64_t down);
     void HandleSettingsInput(std::uint64_t down);
     void HandleLibraryInput(std::uint64_t down);
+    void HandlePreviewsInput(std::uint64_t down);
+    // Preview screen: loads the next ?p=N page of previews near the end.
+    void OpenPreviews();
+    void LoadMorePreviews();
+    void RequestPreviewThumbnails();
+    ehviewer::GallerySummary DetailSummary() const;
+    std::size_t m_preview_selected{};
+    std::size_t m_preview_first_row{};
+    int m_preview_pages_loaded{1};
     bool CheckNetworkReady();
     void Draw();
     std::string SiteBase() const;
@@ -137,6 +151,14 @@ private:
     void OpenReader(std::int64_t gid, const std::string& title, int page_count,
                     Screen return_screen, int start_page = -1);
     void CloseReader();
+    // Carries out what the reader asked for (close, jump, save, ...).
+    bool HandleReaderAction();
+    void RefetchReaderPage(int page);
+    void SaveReaderPage(int page);
+    void SaveReaderSettings();
+    // Resumed once the cancelled job of this gallery has stopped.
+    std::int64_t m_resume_after_cancel_gid{};
+    bool m_psm_ready{};
     // 0 = not local, 1 = downloading/incomplete, 2 = complete.
     int LocalState(std::int64_t gid) const;
 
@@ -146,6 +168,13 @@ private:
     ehviewer::Downloader m_downloader;
     ehviewer::ThumbnailLoader m_thumbnails;
     ehviewer::ReaderView m_reader;
+    ehviewer::Updater m_updater;
+    unsigned m_updater_version{~0U};
+    // The start-up check only reports a newer version, never failures.
+    bool m_update_check_quiet{};
+    std::string m_update_notice;
+    bool PumpUpdater();
+    void StartUpdateCheck(bool quiet);
     std::vector<ehviewer::GallerySummary> m_galleries;
     ehviewer::GalleryDetail m_detail;
     std::vector<ehviewer::LibraryEntry> m_library;
@@ -192,6 +221,8 @@ private:
     int m_touch_last_x{};
     int m_touch_last_y{};
     bool m_touch_dragging{};
+    bool m_touch_long_fired{};
+    unsigned m_touch_start_tick{};
     int m_touch_drag_accumulator{};
     Screen m_reader_return{Screen::Library};
     std::string m_status;

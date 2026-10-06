@@ -4,6 +4,7 @@
 #include "core/I18n.h"
 
 #include <algorithm>
+#include <cstdio>
 
 #ifdef __SWITCH__
 #include <switch.h>
@@ -20,7 +21,7 @@ enum SettingId
     kSettingDoublePage, kSettingDirection, kSettingPrefetch, kSettingKeepAwake, kSettingThumbnails,
     kSettingCategories, kSettingHistory, kSettingClearHistory, kSettingProxy, kSettingProxyUrl,
     kSettingFronting, kSettingHosts, kSettingDoh, kSettingVersion, kSettingListLayout, kSettingTestLogin,
-    kSettingReloadCookies
+    kSettingReloadCookies, kSettingReaderClock, kSettingReaderBattery, kSettingAutoPage, kSettingReaderGuide, kSettingUpdate, kSettingAutoUpdate
 };
 }
 
@@ -100,6 +101,13 @@ std::vector<ehviewer::SettingRow> App::BuildSettingRows() const
     row(kSettingDirection, T("双页翻页方向"), m_settings.reader_right_to_left ? T("从右到左") : T("从左到右"));
     row(kSettingPrefetch, T("预读页数"), std::to_string(m_settings.prefetch_pages));
     row(kSettingKeepAwake, T("阅读和下载时防止休眠"), on_off(m_settings.keep_awake));
+    row(kSettingReaderClock, T("显示时钟"), on_off(m_settings.reader_show_clock));
+    row(kSettingReaderBattery, T("显示电量"), on_off(m_settings.reader_show_battery));
+    row(kSettingAutoPage, T("自动翻页"),
+        m_settings.reader_auto_page_seconds > 0 ? std::to_string(m_settings.reader_auto_page_seconds) + T(" 秒")
+                                                : std::string(T("关")));
+    row(kSettingReaderGuide, T("阅读操作引导"), m_settings.reader_guide_shown ? T("已看过") : T("下次阅读时显示"),
+        T("按 A 重新显示"));
     header("浏览");
     row(kSettingListLayout, T("列表样式"), m_settings.list_layout == 1 ? T("网格（大缩略图）") : T("列表"));
     row(kSettingThumbnails, T("显示缩略图"), on_off(m_settings.show_thumbnails));
@@ -121,6 +129,20 @@ std::vector<ehviewer::SettingRow> App::BuildSettingRows() const
         T("按 A 读取"));
     header("关于");
     row(kSettingVersion, T("版本"), EHV_SWITCH_VERSION, "EhViewer for Nintendo Switch");
+    const ehviewer::Updater::Status update = m_updater.Poll();
+    std::string update_value = update.message.empty() ? std::string(T("按 A 检查")) : update.message;
+    if (update.state == ehviewer::Updater::State::Downloading && update.total > 0)
+    {
+        char progress[64];
+        std::snprintf(progress, sizeof(progress), "  %.1f / %.1f MB", update.downloaded / 1048576.0,
+                      update.total / 1048576.0);
+        update_value += progress;
+    }
+    const char* update_hint = update.state == ehviewer::Updater::State::Available ? T("按 A 下载并安装")
+                            : update.state == ehviewer::Updater::State::Ready     ? T("退出后重新打开即完成更新")
+                                                                                    : T("先查更新服务器，失败再查 GitHub");
+    row(kSettingUpdate, T("检查更新"), update_value, update_hint);
+    row(kSettingAutoUpdate, T("启动时检查更新"), on_off(m_settings.auto_check_update));
     return rows;
 }
 
@@ -148,6 +170,15 @@ void App::ChangeSetting(std::size_t index, int delta)
         m_settings.list_layout = m_settings.list_layout == 1 ? 0 : 1;
         m_list_scroll = m_list_scroll_target = 0.0;
         break;
+    case kSettingUpdate:
+        if (delta < 0 || m_updater.Busy())
+            return;
+        if (m_updater.Poll().state == ehviewer::Updater::State::Available)
+            m_updater.StartInstall(NetworkOptions());
+        else if (m_updater.Poll().state != ehviewer::Updater::State::Ready)
+            StartUpdateCheck(false);
+        return;
+    case kSettingAutoUpdate: m_settings.auto_check_update = !m_settings.auto_check_update; break;
     case kSettingTestLogin:
         if (delta > 0)
             TestLogin();
@@ -164,6 +195,18 @@ void App::ChangeSetting(std::size_t index, int delta)
         m_settings.prefetch_pages = std::max(1, std::min(8, m_settings.prefetch_pages + (delta < 0 ? -1 : 1)));
         break;
     case kSettingKeepAwake: m_settings.keep_awake = !m_settings.keep_awake; break;
+    case kSettingReaderClock: m_settings.reader_show_clock = !m_settings.reader_show_clock; break;
+    case kSettingReaderBattery: m_settings.reader_show_battery = !m_settings.reader_show_battery; break;
+    case kSettingAutoPage:
+    {
+        static const int kChoices[] = {0, 3, 5, 8, 12, 20, 30};
+        int index = 0;
+        while (index < 7 && kChoices[index] != m_settings.reader_auto_page_seconds)
+            ++index;
+        m_settings.reader_auto_page_seconds = kChoices[(((index >= 7 ? 0 : index) + (delta < 0 ? -1 : 1)) + 7) % 7];
+        break;
+    }
+    case kSettingReaderGuide: m_settings.reader_guide_shown = !m_settings.reader_guide_shown; break;
     case kSettingThumbnails: m_settings.show_thumbnails = !m_settings.show_thumbnails; break;
     case kSettingCategories: OpenPicker(Picker::Categories); return;
     case kSettingHistory: m_settings.history_enabled = !m_settings.history_enabled; break;
@@ -318,4 +361,32 @@ void App::RecordHistory(const ehviewer::GalleryDetail& detail)
     m_history.Add(entry);
     std::string error;
     m_history.Save(kHistoryFile, &error);
+}
+
+void App::StartUpdateCheck(bool quiet)
+{
+    if (m_updater.StartCheck(NetworkOptions()))
+        m_update_check_quiet = quiet;
+}
+
+bool App::PumpUpdater()
+{
+    const unsigned version = m_updater.Version();
+    if (version == m_updater_version)
+        return false;
+    m_updater_version = version;
+    const ehviewer::Updater::Status status = m_updater.Poll();
+    if (m_update_check_quiet && !m_updater.Busy())
+    {
+        // Start-up check: only a new version is worth interrupting for.
+        if (status.state == ehviewer::Updater::State::Available)
+            m_status = status.message + T("，可在 设置 → 关于 中安装");
+        m_update_check_quiet = false;
+    }
+    else if (!m_update_check_quiet && !m_updater.Busy() && m_screen != Screen::Settings &&
+             (status.state == ehviewer::Updater::State::Ready || status.state == ehviewer::Updater::State::Failed))
+    {
+        m_status = status.message;
+    }
+    return m_screen == Screen::Settings;
 }

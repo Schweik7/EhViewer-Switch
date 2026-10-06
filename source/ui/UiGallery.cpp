@@ -259,15 +259,16 @@ void Ui::DrawGalleryDetail(const GalleryDetail& detail, int local_state,
         {HidNpadButton_X, T("X 评论 ") + std::to_string(detail.comments.size()), false},
         {HidNpadButton_L, T("L 评分"), false},
         {HidNpadButton_R, detail.favorite_name.empty() ? T("R 收藏") : T("R 改收藏"), false},
+        {HidNpadButton_ZR, T("ZR 预览"), false},
     };
-    for (int index = 0; index < 5; ++index) {
-        const int x = kLeft + index * 150;
+    for (int index = 0; index < 6; ++index) {
+        const int x = kLeft + index * 124;
         const Button& button = buttons[index];
-        AddHit(x, 470, 140, 50, button.key);
-        FillRoundedRect(x, 470, 140, 50, 25, button.primary ? kPrimary.r : 232, button.primary ? kPrimary.g : 222,
+        AddHit(x, 470, 116, 50, button.key);
+        FillRoundedRect(x, 470, 116, 50, 25, button.primary ? kPrimary.r : 232, button.primary ? kPrimary.g : 222,
                         button.primary ? kPrimary.b : 248);
-        const std::string label = FitText(button.label, font_small_, 120);
-        DrawText(label, font_small_, x + (140 - TextWidth(label, font_small_)) / 2, 483,
+        const std::string label = FitText(button.label, font_small_, 104);
+        DrawText(label, font_small_, x + (116 - TextWidth(label, font_small_)) / 2, 483,
                  button.primary ? 255 : 73, button.primary ? 255 : 50, button.primary ? 255 : 113);
     }
     if (downloading) {
@@ -374,6 +375,50 @@ void Ui::DrawTags(const GalleryDetail& detail, std::size_t selected, const std::
         }
         y += 48;
     }
+    Finish(status, last_input, input_events);
+}
+
+void Ui::DrawPreviews(const GalleryDetail& detail, std::size_t selected, std::size_t first_row,
+                      const std::string& footer, const std::string& status,
+                      const std::string& last_input, unsigned long long input_events) {
+    char subtitle[128];
+    std::snprintf(subtitle, sizeof(subtitle), T("%d 页 · 已载入 %zu 张预览 · A 从这一页阅读 · B 返回"),
+                  detail.pages, detail.previews.size());
+    Begin(T("预览：") + detail.title, subtitle, 1);
+    if (detail.previews.empty()) {
+        DrawCard(240, 124, 1016, 486);
+        const std::string text = footer.empty() ? std::string(T("这个图库没有预览")) : footer;
+        DrawText(text, font_body_, 748 - TextWidth(text, font_body_) / 2, 340, kOnSurfaceVariant.r,
+                 kOnSurfaceVariant.g, kOnSurfaceVariant.b);
+        Finish(status, last_input, input_events);
+        return;
+    }
+    constexpr int kCellWidth = 169;
+    constexpr int kCellHeight = 252;
+    for (int row = 0; row < kPreviewRows; ++row) {
+        for (int column = 0; column < kPreviewColumns; ++column) {
+            const std::size_t index = (first_row + row) * kPreviewColumns + column;
+            if (index >= detail.previews.size()) break;
+            const GalleryPreview& preview = detail.previews[index];
+            const int x = 242 + column * kCellWidth;
+            const int y = 110 + row * kCellHeight;
+            const bool active = index == selected;
+            AddHit(x, y, kCellWidth - 6, kCellHeight - 6, HidNpadButton_A, static_cast<int>(index));
+            DrawCard(x, y, kCellWidth - 6, kCellHeight - 6, active);
+            FillRoundedRect(x + 8, y + 8, kCellWidth - 22, 200, 8, 236, 230, 240);
+            if (!DrawThumbnailRegion(PreviewImageKey(preview.image_url), preview.offset_x, preview.width,
+                                     preview.height, x + 8, y + 8, kCellWidth - 22, 200))
+                DrawText("…", font_title_, x + kCellWidth / 2 - 16, y + 90, 150, 140, 160);
+            const std::string label = std::to_string(preview.page_index + 1);
+            DrawText(label, font_small_, x + (kCellWidth - 6 - TextWidth(label, font_small_)) / 2, y + 214,
+                     active ? 33 : 121, active ? 0 : 116, active ? 93 : 126);
+        }
+    }
+    const std::size_t rows = (detail.previews.size() + kPreviewColumns - 1) / kPreviewColumns;
+    std::string bottom = std::to_string(first_row + 1) + " - " +
+                         std::to_string(std::min(rows, first_row + kPreviewRows)) + " / " + std::to_string(rows);
+    if (!footer.empty()) bottom += "   ·   " + footer;
+    DrawText(bottom, font_small_, 244, 614, 121, 116, 126);
     Finish(status, last_input, input_events);
 }
 

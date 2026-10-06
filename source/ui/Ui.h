@@ -7,6 +7,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -64,6 +65,12 @@ enum SidebarItem {
     kSidebarNone = -1
 };
 
+// Thumbnail cache key of a preview sprite sheet (negative, so it never
+// collides with gallery ids).
+inline std::int64_t PreviewImageKey(const std::string& url) {
+    return -static_cast<std::int64_t>(std::hash<std::string>{}(url) & 0x3fffffffffffffffULL) - 1;
+}
+
 class Ui {
 public:
     ~Ui();
@@ -95,6 +102,12 @@ public:
     // *scroll is a line offset; it is clamped to the available content.
     void DrawComments(const GalleryDetail& detail, int* scroll, const std::string& status,
                       const std::string& last_input, unsigned long long input_events);
+    // Preview thumbnails of the shown gallery; keys from PreviewImageKey().
+    void DrawPreviews(const GalleryDetail& detail, std::size_t selected, std::size_t first_row,
+                      const std::string& footer, const std::string& status,
+                      const std::string& last_input, unsigned long long input_events);
+    static constexpr int kPreviewColumns = 6;
+    static constexpr int kPreviewRows = 2;
     void DrawLibrary(const std::vector<LibraryEntry>& entries, std::size_t selected,
                      const DownloadProgress& download, const std::string& status,
                      const std::string& last_input, unsigned long long input_events);
@@ -155,6 +168,9 @@ private:
     // Draws the thumbnail for key scaled to fit inside the box; returns false
     // when it is not loaded yet.
     bool DrawThumbnail(std::int64_t key, int x, int y, int width, int height);
+    // Draws part of a sprite sheet (preview thumbnails); source_width 0 = all.
+    bool DrawThumbnailRegion(std::int64_t key, int source_x, int source_width, int source_height,
+                             int x, int y, int width, int height);
     bool StoreThumbnail(std::int64_t key, SDL_Texture* texture);
     void ClearTextCache();
     // Text helpers that fall back to other system fonts for missing glyphs.

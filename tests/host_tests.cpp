@@ -8,6 +8,7 @@
 #include "core/History.h"
 #include "core/Library.h"
 #include "core/ListLayout.h"
+#include "core/ReleaseInfo.h"
 #include "core/Settings.h"
 #include "core/Subscriptions.h"
 #include "core/SpiderInfo.h"
@@ -269,6 +270,23 @@ void TestGalleryParsers() {
     CHECK(ehviewer::ParseFavoriteSlots(popup + "<input type=\"radio\" value=\"favdel\" />", &slots));
     CHECK(slots.current == 3);
     CHECK(!ehviewer::ParseFavoriteSlots("<html></html>", &slots));
+
+    // Preview sprites of a detail page (structure copied from the live page).
+    std::string grid = "<div id=\"gdt\" class=\"gt200\">";
+    for (int index = 0; index < 3; ++index) {
+        grid += "<a href=\"https://exhentai.org/s/ab12cd34ef/777-" + std::to_string(index + 1) +
+                "\"><div title=\"Page\" style=\"width:176px;height:300px;background:transparent "
+                "url(https://abc.hath.network/c2/xyz/777-0.webp) -" + std::to_string(index * 200) +
+                "px 0 no-repeat\"></div></a>";
+    }
+    grid += "<a href=\"https://exhentai.org/s/ffff000011/777-4\"><img src=\"https://ehgt.org/t/big.jpg\" /></a></div>";
+    const std::vector<ehviewer::GalleryPreview> previews = ehviewer::ParsePreviews(grid, 777);
+    CHECK(previews.size() == 4);
+    CHECK(previews[0].page_index == 0 && previews[0].offset_x == 0 && previews[0].width == 176 &&
+          previews[0].height == 300 && previews[0].image_url == "https://abc.hath.network/c2/xyz/777-0.webp");
+    CHECK(previews[2].page_index == 2 && previews[2].offset_x == 400);
+    CHECK(previews[3].page_index == 3 && previews[3].width == 0 && previews[3].image_url == "https://ehgt.org/t/big.jpg");
+    CHECK(ehviewer::ParsePreviews("<html></html>", 777).empty());
 
     // Folder bar of favorites.php (structure copied from the live page).
     std::string bar = "<div class=\"ido\">";
@@ -550,8 +568,8 @@ void TestTranslations() {
     for (const char* source : {"source/App.cpp", "source/AppInput.cpp", "source/AppLibrary.cpp",
                                "source/AppList.cpp", "source/AppNetwork.cpp", "source/AppSettings.cpp",
                                "source/AppShared.h", "source/ui/Ui.cpp", "source/ui/UiGallery.cpp",
-                               "source/ui/UiLocal.cpp", "source/ui/UiShared.h", "source/ui/ReaderView.cpp",
-                               "source/download/Downloader.cpp", "source/net/NetworkPlan.cpp"}) {
+                               "source/ui/UiLocal.cpp", "source/ui/UiShared.h", "source/ui/ReaderView.cpp", "source/ui/ReaderOverlay.cpp",
+                               "source/download/Downloader.cpp", "source/net/NetworkPlan.cpp", "source/net/Updater.cpp"}) {
         std::string text;
         std::string error;
         CHECK(ehviewer::file::ReadAll(source, &text, &error));
@@ -688,6 +706,37 @@ void TestAtomicFile() {
     CHECK(ehviewer::file::Remove(path));
 }
 
+void TestReleaseInfo() {
+    ehviewer::ReleaseInfo info;
+    std::string error;
+    const std::string json =
+        "{\"tag_name\":\"v0.5.3\",\"body\":\"notes\",\"assets\":["
+        "{\"name\":\"EhViewerSwitch-0.5.3.zip\",\"size\":10,\"browser_download_url\":\"https://x/zip\"},"
+        "{\"name\":\"EhViewerSwitch.nro\",\"size\":10450260,\"browser_download_url\":\"https://x/nro\"}]}";
+    CHECK(ehviewer::ParseReleaseInfo(json, ehviewer::kUpdateAssetName, &info, &error));
+    CHECK(info.tag == "v0.5.3" && info.notes == "notes");
+    CHECK(info.asset_url == "https://x/nro" && info.asset_size == 10450260ULL);
+    // A release without the NRO is valid but has no asset.
+    CHECK(ehviewer::ParseReleaseInfo("{\"tag_name\":\"v1.0.0\",\"assets\":[]}", "a.nro", &info, &error));
+    CHECK(info.asset_url.empty());
+    CHECK(!ehviewer::ParseReleaseInfo("{\"message\":\"API rate limit exceeded\"}", "a.nro", &info, &error));
+    CHECK(error == "API rate limit exceeded");
+    CHECK(!ehviewer::ParseReleaseInfo("<html>", "a.nro", &info, &error));
+
+    CHECK(ehviewer::IsNewerVersion("v0.5.3", "0.5.2"));
+    CHECK(ehviewer::IsNewerVersion("0.5.10", "0.5.9"));
+    CHECK(ehviewer::IsNewerVersion("1.0", "0.9.9"));
+    CHECK(!ehviewer::IsNewerVersion("v0.5.2", "0.5.2"));
+    CHECK(!ehviewer::IsNewerVersion("0.5.1", "0.5.2"));
+    CHECK(!ehviewer::IsNewerVersion("v0.5.2-beta", "0.5.2"));
+    CHECK(!ehviewer::IsNewerVersion("garbage", "0.5.2"));
+    CHECK(ehviewer::IsNewerVersion("0.5.3", "dev") );
+
+    std::string nro(0x20, '\0');
+    nro.replace(0x10, 4, "NRO0");
+    CHECK(ehviewer::LooksLikeNro(nro));
+    CHECK(!ehviewer::LooksLikeNro("<!DOCTYPE html><html>error</html>"));
+}
 void TestPortraitReaderCore() {
     using namespace ehviewer::reader;
     ReaderState state;
@@ -706,6 +755,17 @@ void TestPortraitReaderCore() {
     const Point round_trip = PhysicalToLogical(LogicalToPhysical({100.0, 200.0}, state.orientation),
                                                state.orientation);
     CHECK(std::fabs(round_trip.x - 100.0) < 1e-9 && std::fabs(round_trip.y - 200.0) < 1e-9);
+    // Tap zones (reader guide): physical touches land on the rotated canvas.
+    const Size portrait = LogicalCanvas(state.orientation);
+    CHECK(ClassifyTap({100.0, 640.0}, portrait, false) == TapZone::Previous);
+    CHECK(ClassifyTap({650.0, 640.0}, portrait, false) == TapZone::Next);
+    CHECK(ClassifyTap({360.0, 300.0}, portrait, false) == TapZone::Menu);
+    CHECK(ClassifyTap({360.0, 1000.0}, portrait, false) == TapZone::Progress);
+    CHECK(ClassifyTap({100.0, 640.0}, portrait, true) == TapZone::Next);
+    // With the console turned counter-clockwise the panel's top edge is on the
+    // reader's left: touching it (x=640, y=10) goes to the previous page.
+    CHECK(ClassifyTap(PhysicalToLogical({640.0, 10.0}, state.orientation), portrait, false) == TapZone::Previous);
+    CHECK(ClassifyTap(PhysicalToLogical({640.0, 710.0}, state.orientation), portrait, false) == TapZone::Next);
     const Point cw = LogicalToPhysical({0.0, 0.0}, Orientation::PortraitClockwise);
     CHECK(cw.x == 0.0 && cw.y == 720.0);
     const PageTransform transform = CalculatePageTransform(
@@ -732,6 +792,7 @@ int main() {
     TestLibrary();
     TestSettingsAndHistory();
     TestTranslations();
+    TestReleaseInfo();
     TestListLayout();
     if (failures != 0) {
         std::cerr << failures << " test(s) failed\n";

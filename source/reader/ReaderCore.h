@@ -53,6 +53,13 @@ Rect LogicalRectToPhysical(Rect logical, Orientation orientation,
                            Size physical = {kLandscapeWidth, kLandscapeHeight}) noexcept;
 Direction PhysicalToLogical(Direction physical, Orientation orientation) noexcept;
 
+// Tap zones on the logical canvas, as in Android EhViewer's reader guide:
+// left third / right third turn pages, the middle top half opens the menu and
+// the middle bottom half the progress bar. mirror swaps the page sides (for
+// right-to-left double-page spreads).
+enum class TapZone { Previous, Next, Menu, Progress };
+TapZone ClassifyTap(Point logical, Size canvas, bool mirror) noexcept;
+
 struct PageTransform {
     bool valid = false;
     Size image_size;

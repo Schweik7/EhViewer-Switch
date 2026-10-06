@@ -21,6 +21,10 @@ struct Settings {
     bool reader_right_to_left = true;
     int prefetch_pages = 3;  // 1..8 pages ahead
     bool keep_awake = true;  // no auto sleep while reading or downloading
+    bool reader_guide_shown = false;  // tap-zone guide seen once (like Android)
+    bool reader_show_clock = true;
+    bool reader_show_battery = true;
+    int reader_auto_page_seconds = 0;  // 0 = off, else 3..30
 
     // Browsing.
     int list_layout = 1;  // 0 = rows, 1 = thumbnail grid (Android-like)
@@ -31,6 +35,7 @@ struct Settings {
 
     // Interface.
     bool show_input_debug = false;
+    bool auto_check_update = true;  // VPS first, then GitHub
 
     // Proxy: off by default. Direct access (domain fronting) works for
     // ExHentai; the proxy is only needed for e-hentai.org and toplists.

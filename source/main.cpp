@@ -27,9 +27,11 @@ void ShowFatalError(const std::string& message)
 }
 #endif
 
-int main(int, char**)
+int main(int argc, char** argv)
 {
     App app;
+    if (argc > 0 && argv[0] != nullptr)
+        app.SetSelfPath(argv[0]);
     const bool initialized = app.Init();
     if (initialized)
         app.Run();

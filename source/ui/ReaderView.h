@@ -25,6 +25,16 @@ class Ui;
 // the default is counter-clockwise so the left D-pad ends up at the bottom.
 class ReaderView {
 public:
+    // Reader extras, like Android EhViewer's reader settings.
+    struct Options {
+        bool show_clock = true;
+        bool show_battery = true;
+        int auto_page_seconds = 0;  // 0 = off
+        bool show_guide = false;    // tap-zone guide on the next Open()
+    };
+    // Requests for the App, collected with TakeAction().
+    enum class Action { None, Close, Jump, RefetchPage, SavePage, GuideFinished, SettingsChanged };
+
     explicit ReaderView(Ui* ui);
     ~ReaderView();
 
@@ -41,10 +51,28 @@ public:
     void Configure(reader::Orientation orientation, bool fit_width, bool double_page,
                    bool right_to_left, int prefetch_pages);
     void JumpTo(int page);
-    // Touch input in panel coordinates. Tap: left/right third turns pages,
-    // middle shows the info bar. Drag scrolls the page.
+    void SetOptions(const Options& options) { options_ = options; }
+    const Options& GetOptions() const { return options_; }
+    // Returns the pending request and clears it; page is the page it is about.
+    Action TakeAction(int* page = nullptr);
+    // The current reading mode, for saving it as the default.
+    int OrientationIndex() const;
+    bool FitWidth() const { return state_.scale_mode == reader::ScaleMode::FitWidth; }
+    bool DoublePage() const { return state_.requested_page_mode == reader::PageMode::Double; }
+    bool RightToLeft() const { return state_.reading_direction == reader::ReadingDirection::RightToLeft; }
+    // File of a page on disk, or empty while it is not downloaded.
+    std::string PageFile(int page) const;
+    // Forgets a page so it is looked up and decoded again.
+    void ReloadPage(int page);
+    // Short message drawn on the reader canvas.
+    void ShowToast(const std::string& text);
+    bool OverlayOpen() const { return overlay_ != Overlay::None; }
+
+    // Touch input in panel coordinates (see reader::ClassifyTap for the zones).
+    // Drag scrolls the page, or moves the progress bar when it is open.
     bool Tap(int x, int y);
-    bool Drag(int dx, int dy);
+    bool LongPress(int x, int y);
+    bool Drag(int dx, int dy, int x, int y);
 
     // Physical button masks from libnx (HidNpadButton_*). Returns true when
     // the view changed and needs a redraw.
@@ -77,6 +105,28 @@ private:
     void EnsureCanvas();
     void ReleaseTextures();
 
+    // Overlays drawn on the canvas: the two-step tap guide, the reader menu,
+    // the progress bar, the long-press page menu and page information.
+    enum class Overlay { None, Guide1, Guide2, Menu, Progress, PageMenu, PageInfo };
+    struct MenuItem {
+        std::string label;
+        std::string value;
+        int id = 0;
+    };
+    bool NextPage();
+    bool PreviousPage();
+    bool MirroredTaps() const;
+    void OpenOverlay(Overlay overlay, int page = -1);
+    void BuildMenu();
+    bool ActivateMenuItem(int delta);
+    bool HandleOverlayInput(std::uint64_t down);
+    bool TapOverlay(reader::Point logical);
+    bool SetProgressFromPoint(reader::Point logical);
+    void DrawOverlay(int width, int height);
+    void DrawGuide(int width, int height);
+    void DrawStatus(int width, int height);
+    void FinishGuide();
+
     Ui* ui_;
     bool open_ = false;
     std::string title_;
@@ -95,6 +145,23 @@ private:
     unsigned hint_until_ = 0;
     unsigned last_hint_tick_ = 0;
     int max_texture_size_ = 4096;
+
+    Options options_;
+    Overlay overlay_ = Overlay::None;
+    std::vector<MenuItem> menu_;
+    std::size_t menu_selected_ = 0;
+    std::vector<reader::Rect> menu_rects_;  // logical, filled while drawing
+    reader::Rect progress_rect_;
+    int overlay_page_ = 0;
+    std::string page_info_;
+    Action action_ = Action::None;
+    int action_page_ = 0;
+    std::string toast_;
+    unsigned toast_until_ = 0;
+    unsigned last_turn_tick_ = 0;   // auto page turning
+    int last_minute_ = -1;          // clock redraw
+    int battery_percent_ = -1;
+    unsigned battery_tick_ = 0;
 
     std::mutex mutex_;
     std::condition_variable wake_;

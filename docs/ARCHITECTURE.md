@@ -15,7 +15,8 @@ SwitchPort 是 EhViewer 的独立原生前端，目标依次为在线浏览、�
   - `AppSettings.cpp`：设置行与修改、历史、订阅。
 - `source/ui/Ui.*`：SDL2/SDL_ttf Material 风格界面基础（字体回退、文字缓存、缩略图 LRU、侧栏、状态栏、弹出菜单）；
   `UiGallery.cpp` 画列表/详情/评论/标签，`UiLocal.cpp` 画设置/订阅/书库，`UiShared.h` 放布局常量、配色和格式化函数。
-- `source/ui/ReaderView.*`：SDL 阅读器；后台解码、UI 线程建纹理、逻辑画布旋转输出。
+- `source/ui/ReaderView.*`：SDL 阅读器；后台解码、UI 线程建纹理、逻辑画布旋转输出。`ReaderOverlay.cpp` 画操作引导、菜单、进度条、长按页面菜单和状态栏（都画在逻辑画布上，随方向旋转），通过 `TakeAction()` 把关闭、跳页、保存、重新下载等请求交给 App。
+- `source/net/Updater.*` + `source/core/ReleaseInfo.*`：更新检查与安装（参照 MusicPlayer2 Switch 版）。先查 VPS 镜像，再查 GitHub `/releases/latest`，两边 JSON 同形；下载后校验 `NRO0` 魔数与大小，写成 `<自身>.new` 再替换，失败则下次启动时 `ApplyPendingUpdate`。发布见 `tools/publish_mirror.ps1`。
 - `source/net/HttpClient.*`：libcurl、TLS、Cookie、代理、内置 hosts、DoH、Referer、取消回调和响应大小限制；`GetWithFallback` 逐线路回退。
 - `source/net/NetworkPlan.*`：纯函数的线路尝试计划、成功线路优先、Cookie 目标域判断 `IsSiteHost`。
 - `source/download/Downloader.*`：下载队列工作线程，`.incoming` 续传与发布。

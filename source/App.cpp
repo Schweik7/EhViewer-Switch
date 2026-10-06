@@ -43,7 +43,8 @@ const char* ButtonName(u64 buttons)
 App::App()
     : m_downloader(&m_http, kCaFile, kLibraryRoot),
       m_thumbnails(&m_http, kCaFile),
-      m_reader(&m_ui)
+      m_reader(&m_ui),
+      m_updater(&m_http, kCaFile)
 {
 }
 
@@ -62,6 +63,8 @@ bool App::Init()
     ehviewer::file::CreateDirectoryRecursive(layout.IncomingRoot(), &storage_error);
     LoadSettings();
     ReloadCookieConfig();
+    // A version downloaded last time is swapped in before anything else.
+    m_update_notice = m_updater.ApplyPendingUpdate();
 
 #ifdef __SWITCH__
     // Page requests, thumbnails and downloads run on separate worker threads;
@@ -73,6 +76,8 @@ bool App::Init()
     if (R_FAILED(socket_result))
         socket_result = socketInitializeDefault();
     m_socket_ready = R_SUCCEEDED(socket_result);
+    // Battery level for the reader's status bar.
+    m_psm_ready = R_SUCCEEDED(psmInitialize());
 #else
     m_socket_ready = true;
 #endif
@@ -91,6 +96,8 @@ bool App::Init()
         m_status = "curl initialization failed: " + network_error;
     else if (!storage_error.empty())
         m_status = storage_error;
+    if (!m_update_notice.empty())
+        m_status = m_update_notice;
     return true;
 }
 
@@ -106,6 +113,8 @@ void App::Run()
 
     // The app opens on the download library, like EhViewer's offline start.
     RefreshLibrary();
+    if (m_settings.auto_check_update && m_curl_ready && ehviewer::file::Exists(kCaFile))
+        StartUpdateCheck(true);
     Draw();
     unsigned last_animation = 0;
     while (appletMainLoop())
@@ -155,17 +164,13 @@ void App::Run()
 
         if (m_screen == Screen::Reader)
         {
-            if (down & HidNpadButton_B)
-                CloseReader();
-            else if (down & HidNpadButton_Minus)
-                PromptReaderJump();
-            else
-            {
-                const bool changed = m_reader.HandleInput(down, held);
-                redraw = m_reader.Update() || changed;
-                // Read-while-downloading: fetch from the page being read.
-                m_downloader.SetFocus(m_reading_gid, m_reader.CurrentPage());
-            }
+            // B, − (menu), the guide and the page menu are handled by the reader.
+            const bool changed = m_reader.HandleInput(down, held);
+            redraw = m_reader.Update() || changed;
+            // Read-while-downloading: fetch from the page being read.
+            m_downloader.SetFocus(m_reading_gid, m_reader.CurrentPage());
+            if (HandleReaderAction())
+                redraw = true;
         }
         else if (m_picker != Picker::None)
         {
@@ -187,6 +192,8 @@ void App::Run()
                 redraw = true;
             MaybeLoadMore();
         }
+        if (PumpUpdater() && m_screen != Screen::Reader)
+            redraw = true;
         if (PumpThumbnails() && m_screen != Screen::Reader)
             redraw = true;
         if (PumpDownloadProgress() && m_screen != Screen::Reader)
@@ -220,6 +227,7 @@ void App::Uninit()
         CloseReader();
     m_thumbnails.Stop();
     m_downloader.Stop();
+    m_updater.Stop();
     // Superseded requests are already cancelled; wait for them to unwind.
     if (m_network_task.valid())
         m_retired_tasks.push_back(std::move(m_network_task));
@@ -230,6 +238,8 @@ void App::Uninit()
     }
     m_retired_tasks.clear();
 #ifdef __SWITCH__
+    if (m_psm_ready)
+        psmExit();
     if (m_curl_ready)
         m_http.Shutdown();
     if (m_socket_ready)
@@ -289,6 +299,11 @@ void App::Draw()
     case Screen::GalleryDetail:
         m_ui.DrawGalleryDetail(m_detail, LocalState(m_detail.gid), DownloadSnapshot(), m_status,
                                m_last_input, m_input_events);
+        break;
+    case Screen::Previews:
+        m_ui.DrawPreviews(m_detail, m_preview_selected, m_preview_first_row,
+                          m_task_type == TaskType::Previews ? T("正在载入更多预览") : "", m_status, m_last_input,
+                          m_input_events);
         break;
     case Screen::Comments:
         m_ui.DrawComments(m_detail, &m_comment_scroll, m_status, m_last_input, m_input_events);

@@ -146,6 +146,16 @@ bool App::PumpDownloadProgress()
         !progress.last_message.empty())
         m_status = progress.last_message;
     m_download_active = progress.active;
+    // A page re-download restarted the running job of its gallery.
+    if (m_resume_after_cancel_gid != 0 && !(progress.active && progress.gid == m_resume_after_cancel_gid))
+    {
+        std::vector<ehviewer::LibraryEntry> entries;
+        ehviewer::ScanLibrary(ehviewer::StorageLayout(kLibraryRoot), &entries);
+        for (const ehviewer::LibraryEntry& entry : entries)
+            if (entry.gid == m_resume_after_cancel_gid)
+                ResumeLibraryDownload(entry, true);
+        m_resume_after_cancel_gid = 0;
+    }
     return true;
 }
 
@@ -200,6 +210,13 @@ void App::OpenReader(std::int64_t gid, const std::string& title, int page_count,
     m_reader.Configure(kOrientations[std::max(0, std::min(m_settings.reader_orientation, 2))],
                        m_settings.reader_fit_width, m_settings.reader_double_page,
                        m_settings.reader_right_to_left, m_settings.prefetch_pages);
+    ehviewer::ReaderView::Options options;
+    options.show_clock = m_settings.reader_show_clock;
+    options.show_battery = m_settings.reader_show_battery;
+    options.auto_page_seconds = m_settings.reader_auto_page_seconds;
+    // First time only, like Android EhViewer's gallery guide.
+    options.show_guide = !m_settings.reader_guide_shown;
+    m_reader.SetOptions(options);
     if (!m_reader.Open(title, ehviewer::PageDirectories(layout, gid), page_count, start_page, &error))
     {
         m_status = error;
@@ -289,4 +306,92 @@ void App::UpdateKeepAwake()
     appletSetMediaPlaybackState(want);
     m_keep_awake_active = want;
 #endif
+}
+
+bool App::HandleReaderAction()
+{
+    int page = 0;
+    switch (m_reader.TakeAction(&page))
+    {
+    case ehviewer::ReaderView::Action::Close: CloseReader(); return true;
+    case ehviewer::ReaderView::Action::Jump: PromptReaderJump(); return true;
+    case ehviewer::ReaderView::Action::GuideFinished:
+        m_settings.reader_guide_shown = true;
+        SaveSettings();
+        return true;
+    case ehviewer::ReaderView::Action::SettingsChanged: SaveReaderSettings(); return true;
+    case ehviewer::ReaderView::Action::RefetchPage: RefetchReaderPage(page); return true;
+    case ehviewer::ReaderView::Action::SavePage: SaveReaderPage(page); return true;
+    default: return false;
+    }
+}
+
+void App::SaveReaderSettings()
+{
+    // The reader menu changes the defaults, as in Android EhViewer.
+    m_settings.reader_orientation = m_reader.OrientationIndex();
+    m_settings.reader_fit_width = m_reader.FitWidth();
+    m_settings.reader_double_page = m_reader.DoublePage();
+    m_settings.reader_right_to_left = m_reader.RightToLeft();
+    const ehviewer::ReaderView::Options& options = m_reader.GetOptions();
+    m_settings.reader_show_clock = options.show_clock;
+    m_settings.reader_show_battery = options.show_battery;
+    m_settings.reader_auto_page_seconds = options.auto_page_seconds;
+    std::string error;
+    if (!m_settings.Save(kSettingsFile, &error))
+        m_reader.ShowToast(T("保存设置失败: ") + error);
+}
+
+void App::RefetchReaderPage(int page)
+{
+    const ehviewer::StorageLayout layout(kLibraryRoot);
+    const std::int64_t gid = m_reading_gid;
+    std::string error;
+    // A finished gallery goes back to .incoming; the downloader then fetches
+    // only the missing page and publishes it again. The reader looks in both.
+    if (LocalState(gid) == 2 && !ehviewer::file::IsDirectory(layout.IncomingDirectory(gid)) &&
+        !ehviewer::file::Rename(layout.GalleryDirectory(gid), layout.IncomingDirectory(gid), &error))
+    {
+        m_reader.ShowToast(T("无法重新下载: ") + error);
+        return;
+    }
+    const std::string path = m_reader.PageFile(page);
+    if (!path.empty())
+        ehviewer::file::Remove(path);
+    ehviewer::file::CommitDevice(&error);
+    m_reader.ReloadPage(page);
+    m_downloader.SetFocus(gid, page);
+    // A running job for this gallery has already passed the page: restart it.
+    if (m_downloader.Pause(gid))
+        m_resume_after_cancel_gid = gid;
+    else
+    {
+        std::vector<ehviewer::LibraryEntry> entries;
+        ehviewer::ScanLibrary(layout, &entries);
+        for (const ehviewer::LibraryEntry& entry : entries)
+            if (entry.gid == gid)
+                ResumeLibraryDownload(entry, true);
+    }
+    m_reader.ShowToast(T("正在重新下载第 ") + std::to_string(page + 1) + T(" 页"));
+}
+
+void App::SaveReaderPage(int page)
+{
+    const std::string path = m_reader.PageFile(page);
+    if (path.empty())
+    {
+        m_reader.ShowToast(T("这一页还没有下载"));
+        return;
+    }
+    // ASCII names only on the SD card (see StorageLayout).
+    const std::string directory = std::string(kLibraryRoot) + "/saved";
+    const std::string target = directory + "/g" + std::to_string(m_reading_gid) + "_p" +
+                               std::to_string(page + 1) + path.substr(path.find_last_of('.'));
+    std::string bytes;
+    std::string error;
+    const bool ok = ehviewer::file::CreateDirectoryRecursive(directory, &error) &&
+                    ehviewer::file::ReadAll(path, &bytes, &error, 64U * 1024U * 1024U) &&
+                    ehviewer::file::WriteAllAtomic(target, bytes, &error) &&
+                    ehviewer::file::CommitDevice(&error);
+    m_reader.ShowToast(ok ? T("已保存到 ") + target.substr(target.find(':') + 1) : T("保存失败: ") + error);
 }

@@ -9,7 +9,7 @@ include $(DEVKITPRO)/libnx/switch_rules
 
 APP_TITLE   := EhViewer Switch
 APP_AUTHOR  := EhViewer contributors / Switch port
-APP_VERSION := 0.5.2
+APP_VERSION := 0.5.3
 
 TARGET      := EhViewerSwitch
 BUILD       := build

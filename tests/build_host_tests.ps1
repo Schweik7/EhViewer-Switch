@@ -17,6 +17,7 @@ $sources = @(
     (Join-Path $projectRoot 'source\core\History.cpp'),
     (Join-Path $projectRoot 'source\core\I18n.cpp'),
     (Join-Path $projectRoot 'source\core\Settings.cpp'),
+    (Join-Path $projectRoot 'source\core\ReleaseInfo.cpp'),
     (Join-Path $projectRoot 'source\core\Subscriptions.cpp'),
     (Join-Path $projectRoot 'source\core\SpiderInfo.cpp'),
     (Join-Path $projectRoot 'source\core\StorageLayout.cpp'),

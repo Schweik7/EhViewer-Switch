@@ -372,6 +372,26 @@ bool Ui::DrawThumbnail(std::int64_t key, int x, int y, int width, int height) {
     return true;
 }
 
+bool Ui::DrawThumbnailRegion(std::int64_t key, int source_x, int source_width, int source_height,
+                             int x, int y, int width, int height) {
+    const auto found = thumbnails_.find(key);
+    if (found == thumbnails_.end() || found->second.width <= 0) return false;
+    if (source_width <= 0) return DrawThumbnail(key, x, y, width, height);
+    found->second.last_used = ++thumbnail_clock_;
+    const int clipped_width = std::min(source_width, found->second.width - source_x);
+    const int clipped_height = std::min(source_height, found->second.height);
+    if (clipped_width <= 0 || clipped_height <= 0) return false;
+    const SDL_Rect source{source_x, 0, clipped_width, clipped_height};
+    const double scale = std::min(static_cast<double>(width) / clipped_width,
+                                  static_cast<double>(height) / clipped_height);
+    const int drawn_width = std::max(1, static_cast<int>(clipped_width * scale));
+    const int drawn_height = std::max(1, static_cast<int>(clipped_height * scale));
+    const SDL_Rect destination{x + (width - drawn_width) / 2, y + (height - drawn_height) / 2,
+                               drawn_width, drawn_height};
+    SDL_RenderCopy(renderer_, found->second.texture, &source, &destination);
+    return true;
+}
+
 void Ui::Shutdown() {
     ClearTextCache();
     ClearThumbnails();

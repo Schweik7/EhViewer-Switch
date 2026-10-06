@@ -11,7 +11,23 @@
 - 0.3.1 起 NRO 内嵌 NACP（Makefile `NROFLAGS --nacp/--icon`），Sphaira 可显示版本；此前的
   NRO 没有 ASET 段，所以显示 Unknown。版本号只在 Makefile `APP_VERSION` 维护，界面侧栏同步显示。
 
-## 0.5.2（2026-10-05，已部署，待实机验证）
+## 0.5.3（2026-10-06，已部署，待实机验证）
+
+- **阅读器引导与菜单**（对照 Android `GalleryGuideView`、`GalleryActivity`）：首次打开两步引导（左/右翻页、中上菜单、
+  中下进度条；长按页面菜单），看过后记入 `settings.ini` 的 `reader_guide_shown`。点按区域由纯函数
+  `reader::ClassifyTap` 决定（宿主测试覆盖），横屏从右到左双页时左右互换。
+  菜单项（方向、缩放、双页、翻页方向、自动翻页、时钟、电量）改的是默认值，立即写回设置。
+  长按 500 ms（`kLongPressMilliseconds`）弹出页面菜单：重新载入、重新下载这一页（已完成的图库先移回
+  `.incoming`，下载器只补这一页再重新发布；正在下载时先暂停再续传）、保存到 `manga/EhViewerSwitch/saved/`
+  （ASCII 文件名）、页面信息。状态栏显示时间、电量（`psmGetBatteryChargePercentage`）与页码。
+- **预览缩略图**：`ParsePreviews` 解析详情页雪碧图（`url(...) -Xpx 0` + 宽高）或大图预览；
+  `Ui::DrawThumbnailRegion` 按偏移裁切，缓存键 `PreviewImageKey(url)`（负数，不与 gid 冲突）。
+  详情页 `ZR`/按钮进入预览，接近末尾按 `?p=N` 追加下一页预览，`A` 从该页开始读。
+- **自动更新**：`Updater` 先查 VPS（`https://download.psyventures.cn/ehviewer/latest.json`，nginx 根目录
+  `/var/www/download`，无需改配置），失败再查 GitHub。发版：`gh release create` 后运行
+  `tools/publish_mirror.ps1 -SshHost root@<vps>`。验证更新流程时不要用 FTP 推 NRO。
+
+## 0.5.2（2026-10-05）
 
 - **单项启停下载**：`Downloader::Pause(gid)` 从队列移除或取消正在运行的该任务（在锁内置取消标志，
   不会误伤下一个任务）；`DownloadProgress::queued_gids` 让书库显示“下载中/排队中/已暂停”。

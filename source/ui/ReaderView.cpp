@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <ctime>
 #include <utility>
 
 namespace ehviewer {
@@ -101,6 +102,10 @@ bool ReaderView::Open(const std::string& title, std::vector<std::string> directo
     missing_.clear();
     hint_until_ = SDL_GetTicks() + kHintMilliseconds;
     last_hint_tick_ = 0;
+    last_turn_tick_ = SDL_GetTicks();
+    toast_until_ = 0;
+    action_ = Action::None;
+    overlay_ = options_.show_guide ? Overlay::Guide1 : Overlay::None;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         stopping_ = false;
@@ -120,6 +125,7 @@ void ReaderView::Close() {
     canvas_ = nullptr;
     directories_.clear();
     page_count_ = 0;
+    overlay_ = Overlay::None;
     open_ = false;
 }
 
@@ -287,6 +293,38 @@ bool ReaderView::Update() {
         last_hint_tick_ = now;
         dirty = true;
     }
+    if (toast_until_ != 0 && now >= toast_until_) {
+        toast_until_ = 0;
+        dirty = true;
+    }
+    // Auto page turning waits for the page to be on screen and pauses while
+    // a menu is open.
+    if (options_.auto_page_seconds > 0 && overlay_ == Overlay::None &&
+        textures_.count(state_.current_page) != 0 &&
+        now - last_turn_tick_ >= static_cast<unsigned>(options_.auto_page_seconds) * 1000U) {
+        const reader::PageTransform transform = CurrentTransform();
+        if (transform.valid && transform.scroll_y < transform.max_scroll_y - 0.5)
+            Scroll(reader::LogicalCanvas(state_.orientation).height * 0.75);
+        else if (!NextPage())
+            ShowToast(T("已到最后一页"));
+        last_turn_tick_ = now;
+        dirty = true;
+    }
+    // Clock and battery in the status bar.
+    const std::time_t clock = std::time(nullptr);
+    const std::tm* local = std::localtime(&clock);
+    const int minute = local != nullptr ? local->tm_hour * 60 + local->tm_min : -1;
+    if (minute != last_minute_) {
+        last_minute_ = minute;
+        dirty = true;
+    }
+    if (options_.show_battery && (battery_tick_ == 0 || now - battery_tick_ > 30000)) {
+        battery_tick_ = now;
+        u32 percent = 0;
+        const int previous = battery_percent_;
+        battery_percent_ = R_SUCCEEDED(psmGetBatteryChargePercentage(&percent)) ? static_cast<int>(percent) : -1;
+        dirty = dirty || previous != battery_percent_;
+    }
     return dirty;
 }
 
@@ -303,6 +341,7 @@ reader::PageTransform ReaderView::CurrentTransform() const {
 
 void ReaderView::GoToPage(std::size_t page, bool scroll_to_end) {
     state_.current_page = page;
+    last_turn_tick_ = SDL_GetTicks();
     state_.scroll_x = 0.0;
     state_.scroll_y = scroll_to_end ? 1e9 : 0.0;
     SchedulePrefetch();
@@ -334,44 +373,71 @@ void ReaderView::JumpTo(int page) {
     GoToPage(static_cast<std::size_t>(std::max(0, std::min(page, static_cast<int>(page_count_) - 1))), false);
 }
 
+bool ReaderView::NextPage() {
+    const std::size_t step = reader::EffectivePageMode(state_) == reader::PageMode::Double ? 2 : 1;
+    if (state_.current_page + step >= page_count_) return false;
+    GoToPage(state_.current_page + step, false);
+    return true;
+}
+
+bool ReaderView::PreviousPage() {
+    const std::size_t step = reader::EffectivePageMode(state_) == reader::PageMode::Double ? 2 : 1;
+    if (state_.current_page == 0) return false;
+    GoToPage(state_.current_page >= step ? state_.current_page - step : 0, false);
+    return true;
+}
+
+bool ReaderView::MirroredTaps() const {
+    // In right-to-left spreads the left side is the next page.
+    return state_.orientation == Orientation::Landscape &&
+           state_.reading_direction == reader::ReadingDirection::RightToLeft &&
+           reader::EffectivePageMode(state_) == reader::PageMode::Double;
+}
+
 bool ReaderView::Tap(int x, int y) {
     if (!open_) return false;
     const reader::Point logical = reader::PhysicalToLogical(
         {static_cast<double>(x), static_cast<double>(y)}, state_.orientation);
-    const double width = reader::LogicalCanvas(state_.orientation).width;
-    const std::size_t step = reader::EffectivePageMode(state_) == reader::PageMode::Double ? 2 : 1;
-    // In right-to-left spreads the left side is the next page.
-    const bool swap = state_.orientation == Orientation::Landscape &&
-                      state_.reading_direction == reader::ReadingDirection::RightToLeft &&
-                      reader::EffectivePageMode(state_) == reader::PageMode::Double;
-    int direction = logical.x < width / 3.0 ? -1 : logical.x > width * 2.0 / 3.0 ? 1 : 0;
-    if (swap) direction = -direction;
-    if (direction == 0) {
-        hint_until_ = SDL_GetTicks() + kHintMilliseconds;
-        return true;
-    }
-    if (direction > 0 && state_.current_page + step < page_count_) {
-        GoToPage(state_.current_page + step, false);
-        return true;
-    }
-    if (direction < 0 && state_.current_page > 0) {
-        GoToPage(state_.current_page >= step ? state_.current_page - step : 0, false);
-        return true;
+    if (overlay_ != Overlay::None) return TapOverlay(logical);
+    switch (reader::ClassifyTap(logical, reader::LogicalCanvas(state_.orientation), MirroredTaps())) {
+        case reader::TapZone::Previous: return PreviousPage();
+        case reader::TapZone::Next: return NextPage();
+        case reader::TapZone::Menu: OpenOverlay(Overlay::Menu); return true;
+        case reader::TapZone::Progress: OpenOverlay(Overlay::Progress); return true;
     }
     return false;
 }
 
-bool ReaderView::Drag(int dx, int dy) {
+bool ReaderView::LongPress(int x, int y) {
+    if (!open_ || overlay_ != Overlay::None) return false;
+    const reader::Point logical = reader::PhysicalToLogical(
+        {static_cast<double>(x), static_cast<double>(y)}, state_.orientation);
+    // In a double-page spread the half that was pressed picks the page.
+    std::size_t page = state_.current_page;
+    if (reader::EffectivePageMode(state_) == reader::PageMode::Double && page + 1 < page_count_) {
+        const bool right_half = logical.x > reader::LogicalCanvas(state_.orientation).width / 2.0;
+        const bool rtl = state_.reading_direction == reader::ReadingDirection::RightToLeft;
+        if (right_half != rtl) ++page;
+    }
+    OpenOverlay(Overlay::PageMenu, static_cast<int>(page));
+    return true;
+}
+
+bool ReaderView::Drag(int dx, int dy, int x, int y) {
     if (!open_) return false;
+    if (overlay_ == Overlay::Progress)
+        return SetProgressFromPoint(reader::PhysicalToLogical(
+            {static_cast<double>(x), static_cast<double>(y)}, state_.orientation));
+    if (overlay_ != Overlay::None) return false;
     const reader::Point origin = reader::PhysicalToLogical({640.0, 360.0}, state_.orientation);
     const reader::Point moved = reader::PhysicalToLogical(
         {640.0 + dx, 360.0 + dy}, state_.orientation);
     // Content follows the finger, so scrolling goes the opposite way.
     return Scroll(-(moved.y - origin.y));
 }
-
 bool ReaderView::HandleInput(std::uint64_t down, std::uint64_t held) {
     if (!open_ || page_count_ == 0) return false;
+    if (overlay_ != Overlay::None) return HandleOverlayInput(down);
     bool changed = false;
     const std::size_t step = reader::EffectivePageMode(state_) == reader::PageMode::Double ? 2 : 1;
     const auto next = [&]() {
@@ -436,13 +502,15 @@ bool ReaderView::HandleInput(std::uint64_t down, std::uint64_t held) {
         SchedulePrefetch();
         changed = true;
     }
-    if ((down & HidNpadButton_Minus) && state_.orientation == Orientation::Landscape) {
-        state_.requested_page_mode = state_.requested_page_mode == reader::PageMode::Single
-            ? reader::PageMode::Double : reader::PageMode::Single;
-        hint_until_ = SDL_GetTicks() + kHintMilliseconds;
-        SchedulePrefetch();
+    if (down & HidNpadButton_Minus) {
+        OpenOverlay(Overlay::Menu);
         changed = true;
     }
+    if (down & HidNpadButton_StickR) {
+        OpenOverlay(Overlay::PageMenu, static_cast<int>(state_.current_page));
+        changed = true;
+    }
+    if (down & HidNpadButton_B) action_ = Action::Close;
     return changed;
 }
 
@@ -507,22 +575,25 @@ void ReaderView::Draw() {
         }
     }
 
-    char indicator[48];
-    std::snprintf(indicator, sizeof(indicator), "%zu / %zu", state_.current_page + 1, page_count_);
-    ui_->FillRoundedRect(canvas_width - 148, canvas_height - 52, 132, 38, 19, 0, 0, 0, 150);
-    ui_->DrawText(indicator, ui_->font_small_, canvas_width - 132, canvas_height - 45, 240, 240, 240);
+    DrawStatus(canvas_width, canvas_height);
 
-    if (SDL_GetTicks() < hint_until_) {
+    if (SDL_GetTicks() < hint_until_ && overlay_ == Overlay::None) {
         ui_->FillRoundedRect(16, 16, canvas_width - 32, 92, 18, 0, 0, 0, 170);
         ui_->DrawFittedText(title_, ui_->font_small_, 34, 26, canvas_width - 68, 255, 255, 255);
         std::string mode = OrientationLabel(state_.orientation);
         mode += state_.scale_mode == reader::ScaleMode::FitWidth ? T(" · 适应宽度") : T(" · 整页");
         if (state_.orientation == Orientation::Landscape)
             mode += state_.requested_page_mode == reader::PageMode::Double ? T(" · 双页") : T(" · 单页");
-        ui_->DrawFittedText(mode + T("   B 返回 · Y 缩放 · X 旋转 · − 跳页"), ui_->font_small_, 34, 62,
+        ui_->DrawFittedText(mode + T("   − 菜单 · B 返回 · 点中间上方 菜单 · 长按 页面菜单"), ui_->font_small_, 34, 62,
                             canvas_width - 68, 210, 200, 230);
     }
-
+    if (toast_until_ != 0 && SDL_GetTicks() < toast_until_) {
+        const int width = std::min(canvas_width - 48, ui_->TextWidth(toast_, ui_->font_small_) + 48);
+        ui_->FillRoundedRect((canvas_width - width) / 2, canvas_height - 130, width, 44, 22, 0, 0, 0, 200);
+        ui_->DrawFittedText(toast_, ui_->font_small_, (canvas_width - width) / 2 + 24, canvas_height - 121,
+                            width - 48, 255, 255, 255);
+    }
+    DrawOverlay(canvas_width, canvas_height);
     SDL_SetRenderTarget(renderer, nullptr);
     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
     SDL_RenderClear(renderer);

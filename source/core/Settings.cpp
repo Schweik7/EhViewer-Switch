@@ -73,6 +73,14 @@ bool Settings::Parse(const std::string& text, Settings* settings, std::string* e
             ok = ParseInt(value, 1, 8, &parsed.prefetch_pages);
         } else if (key == "keep_awake") {
             ok = ParseBool(value, &parsed.keep_awake);
+        } else if (key == "reader_guide_shown") {
+            ok = ParseBool(value, &parsed.reader_guide_shown);
+        } else if (key == "reader_show_clock") {
+            ok = ParseBool(value, &parsed.reader_show_clock);
+        } else if (key == "reader_show_battery") {
+            ok = ParseBool(value, &parsed.reader_show_battery);
+        } else if (key == "reader_auto_page_seconds") {
+            ok = ParseInt(value, 0, 30, &parsed.reader_auto_page_seconds);
         } else if (key == "list_layout") {
             ok = ParseInt(value, 0, 1, &parsed.list_layout);
         } else if (key == "show_thumbnails") {
@@ -81,6 +89,8 @@ bool Settings::Parse(const std::string& text, Settings* settings, std::string* e
             ok = ParseBool(value, &parsed.history_enabled);
         } else if (key == "excluded_categories") {
             ok = ParseInt(value, 0, 1023, &parsed.excluded_categories);
+        } else if (key == "auto_check_update") {
+            ok = ParseBool(value, &parsed.auto_check_update);
         } else if (key == "show_input_debug") {
             ok = ParseBool(value, &parsed.show_input_debug);
         } else if (key == "proxy_enabled") {
@@ -112,11 +122,16 @@ std::string Settings::Serialize() const {
            << "reader_right_to_left=" << (reader_right_to_left ? 1 : 0) << '\n'
            << "prefetch_pages=" << prefetch_pages << '\n'
            << "keep_awake=" << (keep_awake ? 1 : 0) << '\n'
+           << "reader_guide_shown=" << (reader_guide_shown ? 1 : 0) << '\n'
+           << "reader_show_clock=" << (reader_show_clock ? 1 : 0) << '\n'
+           << "reader_show_battery=" << (reader_show_battery ? 1 : 0) << '\n'
+           << "reader_auto_page_seconds=" << reader_auto_page_seconds << '\n'
            << "list_layout=" << list_layout << '\n'
            << "show_thumbnails=" << (show_thumbnails ? 1 : 0) << '\n'
            << "history_enabled=" << (history_enabled ? 1 : 0) << '\n'
            << "excluded_categories=" << excluded_categories << '\n'
            << "show_input_debug=" << (show_input_debug ? 1 : 0) << '\n'
+           << "auto_check_update=" << (auto_check_update ? 1 : 0) << '\n'
            << "proxy_enabled=" << (proxy_enabled ? 1 : 0) << '\n'
            << "proxy_url=" << proxy_url << '\n'
            << "domain_fronting=" << domain_fronting << '\n'

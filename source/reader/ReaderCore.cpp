@@ -198,6 +198,12 @@ std::uint64_t MemoryBudget::BytesToFree(std::uint64_t resident,
     return wanted > usable ? wanted - usable : 0;
 }
 
+TapZone ClassifyTap(Point logical, Size canvas, bool mirror) noexcept {
+    if (logical.x < canvas.width / 3.0) return mirror ? TapZone::Next : TapZone::Previous;
+    if (logical.x > canvas.width * 2.0 / 3.0) return mirror ? TapZone::Previous : TapZone::Next;
+    return logical.y < canvas.height / 2.0 ? TapZone::Menu : TapZone::Progress;
+}
+
 std::uint64_t EstimateDecodedBytes(std::uint32_t width, std::uint32_t height,
                                    std::uint32_t bpp) noexcept {
     if (width == 0 || height == 0 || bpp == 0) return 0;

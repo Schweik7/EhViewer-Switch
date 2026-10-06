@@ -9,6 +9,7 @@
 
 #ifdef __SWITCH__
 #include <switch.h>
+#include <SDL2/SDL.h>
 #endif
 
 using ehviewer::i18n::T;
@@ -291,6 +292,8 @@ void App::HandleTouch(std::uint64_t* down)
             m_touch_start_x = m_touch_last_x = x;
             m_touch_start_y = m_touch_last_y = y;
             m_touch_drag_accumulator = 0;
+            m_touch_start_tick = SDL_GetTicks();
+            m_touch_long_fired = false;
             m_list_velocity = 0.0;  // a new touch stops a fling
             return;
         }
@@ -300,11 +303,19 @@ void App::HandleTouch(std::uint64_t* down)
             m_touch_dragging = true;
         m_touch_last_x = x;
         m_touch_last_y = y;
-        if (!m_touch_dragging || (dx == 0 && dy == 0))
+        // Holding still opens the reader's page menu, as on Android.
+        if (m_screen == Screen::Reader && !m_touch_dragging && !m_touch_long_fired &&
+            SDL_GetTicks() - m_touch_start_tick >= kLongPressMilliseconds)
+        {
+            m_touch_long_fired = true;
+            m_reader.LongPress(m_touch_start_x, m_touch_start_y);
+            return;
+        }
+        if (!m_touch_dragging || (dx == 0 && dy == 0) || m_touch_long_fired)
             return;
         if (m_screen == Screen::Reader)
         {
-            m_reader.Drag(dx, dy);
+            m_reader.Drag(dx, dy, x, y);
             return;
         }
         if (m_screen == Screen::GalleryList)
@@ -334,7 +345,7 @@ void App::HandleTouch(std::uint64_t* down)
         return;
     // Finger lifted.
     m_touch_down = false;
-    if (m_touch_dragging)
+    if (m_touch_dragging || m_touch_long_fired)
         return;
     const int x = m_touch_start_x;
     const int y = m_touch_start_y;
@@ -382,6 +393,8 @@ void App::HandleTouch(std::uint64_t* down)
                 m_tag_selected = index;
             else if (m_screen == Screen::Subscriptions)
                 m_subscription_selected = index;
+            else if (m_screen == Screen::Previews)
+                m_preview_selected = index;
         }
         *down |= it->buttons;
         return;
@@ -402,6 +415,7 @@ void App::HandleScreenInput(std::uint64_t down)
     case Screen::Tags: HandleTagsInput(down); break;
     case Screen::Settings: HandleSettingsInput(down); break;
     case Screen::Library: HandleLibraryInput(down); break;
+    case Screen::Previews: HandlePreviewsInput(down); break;
     default: break;
     }
 }
@@ -479,11 +493,9 @@ void App::HandleSubscriptionsInput(std::uint64_t down)
 void App::HandleDetailInput(std::uint64_t down)
 {
 #ifdef __SWITCH__
-    ehviewer::GallerySummary summary;
-    summary.gid = m_detail.gid;
-    summary.token = m_detail.token;
-    summary.title = m_detail.title;
-    summary.path = "/g/" + std::to_string(m_detail.gid) + "/" + m_detail.token + "/";
+    const ehviewer::GallerySummary summary = DetailSummary();
+    if (down & HidNpadButton_ZR)
+        OpenPreviews();
     if ((down & HidNpadButton_Y) && LocalState(m_detail.gid) != 2)
         EnqueueDownload(summary, &m_detail);
     if (down & HidNpadButton_A)
@@ -638,6 +650,89 @@ void App::HandleLibraryInput(std::uint64_t down)
                 ++started;
         m_status = started > 0 ? T("已开始 ") + std::to_string(started) + T(" 个下载任务") : T("没有需要继续的下载");
     }
+#else
+    (void)down;
+#endif
+}
+
+ehviewer::GallerySummary App::DetailSummary() const
+{
+    ehviewer::GallerySummary summary;
+    summary.gid = m_detail.gid;
+    summary.token = m_detail.token;
+    summary.title = m_detail.title;
+    summary.path = "/g/" + std::to_string(m_detail.gid) + "/" + m_detail.token + "/";
+    return summary;
+}
+
+void App::OpenPreviews()
+{
+    m_preview_selected = 0;
+    m_preview_first_row = 0;
+    m_screen = Screen::Previews;
+    RequestPreviewThumbnails();
+    if (m_detail.previews.empty())
+        LoadMorePreviews();
+}
+
+void App::RequestPreviewThumbnails()
+{
+    // Sprite sheets of the rows on screen plus one row either side.
+    constexpr std::size_t columns = ehviewer::Ui::kPreviewColumns;
+    const std::size_t first = (m_preview_first_row > 0 ? m_preview_first_row - 1 : 0) * columns;
+    const std::size_t last = std::min(m_detail.previews.size(),
+                                      (m_preview_first_row + ehviewer::Ui::kPreviewRows + 1) * columns);
+    std::vector<ehviewer::ThumbnailRequest> requests;
+    for (std::size_t index = first; index < last; ++index)
+    {
+        const std::string& url = m_detail.previews[index].image_url;
+        const std::int64_t key = ehviewer::PreviewImageKey(url);
+        const bool queued = std::any_of(requests.begin(), requests.end(),
+            [key](const ehviewer::ThumbnailRequest& request) { return request.key == key; });
+        if (!queued && !m_ui.HasThumbnail(key))
+            requests.push_back({key, url});
+    }
+    if (!requests.empty())
+        m_thumbnails.Replace(std::move(requests), m_cookies.BuildCookieHeader(), NetworkOptions());
+}
+
+void App::HandlePreviewsInput(std::uint64_t down)
+{
+#ifdef __SWITCH__
+    constexpr std::size_t columns = ehviewer::Ui::kPreviewColumns;
+    constexpr std::size_t rows = ehviewer::Ui::kPreviewRows;
+    const std::size_t count = m_detail.previews.size();
+    const std::size_t before = m_preview_first_row;
+    if ((down & HidNpadButton_AnyLeft) && m_preview_selected > 0)
+        --m_preview_selected;
+    if ((down & HidNpadButton_AnyRight) && m_preview_selected + 1 < count)
+        ++m_preview_selected;
+    if ((down & HidNpadButton_AnyUp) && m_preview_selected >= columns)
+        m_preview_selected -= columns;
+    if ((down & HidNpadButton_AnyDown) && count > 0)
+        m_preview_selected = std::min(count - 1, m_preview_selected + columns);
+    // Keep the selection on screen.
+    const std::size_t row = m_preview_selected / columns;
+    if (row < m_preview_first_row)
+        m_preview_first_row = row;
+    if (row >= m_preview_first_row + rows)
+        m_preview_first_row = row - rows + 1;
+    if (m_preview_first_row != before)
+        RequestPreviewThumbnails();
+    // Near the end: fetch the next preview page.
+    // Only on input, so a failed request is not retried every frame.
+    if (down != 0 && count > 0 && (m_preview_first_row + rows + 1) * columns >= count)
+        LoadMorePreviews();
+    if ((down & HidNpadButton_A) && m_preview_selected < count)
+    {
+        // Read from this page; pages come in as they download.
+        if (LocalState(m_detail.gid) != 2)
+            EnqueueDownload(DetailSummary(), &m_detail, true);
+        OpenReader(m_detail.gid, m_detail.title, m_detail.pages, Screen::Previews,
+                   m_detail.previews[m_preview_selected].page_index);
+    }
+    if (down & HidNpadButton_B)
+        m_screen = Screen::GalleryDetail;
 #else
     (void)down;
 #endif
